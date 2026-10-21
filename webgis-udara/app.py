@@ -10,9 +10,25 @@ EE_PROJECT = os.getenv("EE_PROJECT")
 if not EE_PROJECT:
     raise SystemExit("Isi EE_PROJECT di file .env (lihat .env.example).")
 
-ee.Initialize(project=EE_PROJECT)
+SA_JSON = os.getenv("EE_SERVICE_ACCOUNT_JSON")
+if SA_JSON:
+    # Di server online: login pakai service account
+    import json
+    from google.oauth2 import service_account
 
-app = Flask(__name__)
+    creds = service_account.Credentials.from_service_account_info(
+        json.loads(SA_JSON),
+        scopes=[
+            "https://www.googleapis.com/auth/earthengine",
+            "https://www.googleapis.com/auth/cloud-platform",
+        ],
+    )
+    ee.Initialize(creds, project=EE_PROJECT)
+else:
+    # Di laptop: login seperti biasa
+    ee.Initialize(project=EE_PROJECT)
+
+app = Flask(__name__, static_folder="public", static_url_path="")
 from pm25 import bp as pm25_bp
 app.register_blueprint(pm25_bp)
 
