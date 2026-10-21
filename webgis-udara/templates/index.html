@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebGIS Kualitas Udara Indonesia</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #app { display: flex; height: 100%; }
+    #sidebar { width: 340px; padding: 14px; overflow-y: auto; background: #85c2ffa7; border-right: 1px solid #ddd; }
+    #map { flex: 1; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+    .logo { height: 48px; width: auto; }
+    .brand h1 { margin: 0; font-family: 'Segoe UI', Arial, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #000000; }
+    .sub { font-size: 12px; color: #666; margin-bottom: 12px; }
+    label { display: block; font-weight: 600; font-size: 13px; margin: 10px 0 4px; }
+    select, input, button { width: 100%; padding: 8px; font-size: 14px; border: 1px solid #bbb; border-radius: 6px; }
+    button { background: #1a73e8; color: #fff; border: none; margin-top: 12px; cursor: pointer; }
+    button:disabled { background: #9bb8e8; cursor: wait; }
+    #legend-bar { height: 14px; border-radius: 3px; margin-top: 4px; }
+    #legend-labels { display: flex; justify-content: space-between; font-size: 12px; }
+    #info { margin-top: 14px; font-size: 13px; white-space: pre-line; font-weight: 600; }
+    #status { font-size: 12px; color: #c5221f; margin-top: 8px; }
+    .hint { font-size: 12px; color: #666; margin-top: 14px; }
+    canvas { margin-top: 10px; }
+    @media (max-width: 720px) {
+      #app { flex-direction: column-reverse; }
+      #sidebar { width: 100%; height: 45%; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+  <img src="/static/logo.png" alt="Logo" class="logo" />
+  <h1>WebGIS Kualitas Udara Indonesia</h1>
+</div>
+
+    <label for="param">Parameter</label>
+    <select id="param"></select>
+
+    <label for="start">Tanggal mulai</label>
+    <input type="date" id="start" />
+    <label for="end">Tanggal akhir</label>
+    <input type="date" id="end" />
+
+    <button id="apply">Tampilkan</button>
+    <div id="status"></div>
+
+    <label id="legend-title">Legenda</label>
+    <div id="legend-bar"></div>
+    <div id="legend-labels"><span id="lg-min"></span><span id="lg-mid"></span><span id="lg-max"></span></div>
+
+    <div class="hint">Klik peta untuk melihat nilai dan grafik deret waktu di titik tersebut.</div>
+    <div id="info"></div>
+    <canvas id="chart" height="220"></canvas>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  let PARAMS = {}, PALETTE = [];
+  let tileLayer = null, marker = null, chart = null;
+  let current = null; // { param, start, end }
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- Peta ----------
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors', maxZoom: 18
+  });
+  const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri', maxZoom: 18
+  });
+  const map = L.map('map', { layers: [osm] }). setView([-4.4, 118.4], 4);
+  L.control.layers({ 'OpenStreetMap': osm, 'Citra Satelit (Esri)': esri }).addTo(map);
+
+  // ---------- Util ----------
+  const fmt = (v) => (v === null || v === undefined) ? '-' : Number(v).toExponential(3);
+  const iso = (d) => d.toISOString().slice(0, 10);
+
+  function setLegend() {
+    const cfg = PARAMS[$('param').value];
+    $('legend-title').textContent = `${cfg.label} [${cfg.unit}]`;
+    $('legend-bar').style.background =
+      `linear-gradient(to right, ${PALETTE.map(c => '#' + c).join(',')})`;
+    $('lg-min').textContent = cfg.min;
+    $('lg-mid').textContent = (cfg.min + cfg.max) / 2;
+    $('lg-max').textContent = cfg.max;
+  }
+
+  // ---------- Muat peta ----------
+  async function loadLayer() {
+    const param = $('param').value, start = $('start').value, end = $('end').value;
+    if (!start || !end) { $('status').textContent = 'Isi tanggal mulai & akhir.'; return; }
+
+    $('apply').disabled = true;
+    $('status').textContent = 'Memuat data dari Earth Engine...';
+    try {
+      const res = await fetch(`/api/tiles?param=${param}&start=${start}&end=${end}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      if (tileLayer) map.removeLayer(tileLayer);
+      tileLayer = L.tileLayer(data.tile_url, { opacity: 0.8 }).addTo(map);
+      current = { param, start, end };
+      setLegend();
+      $('status').textContent = '';
+      $('info').textContent = '';
+      if (chart) { chart.destroy(); chart = null; }
+    } catch (e) {
+      $('status').textContent = 'Gagal: ' + e.message;
+    } finally {
+      $('apply').disabled = false;
+    }
+  }
+
+  // ---------- Klik titik ----------
+  map.on('click', async (e) => {
+    if (!current) return;
+    const { lat, lng } = e.latlng;
+    if (marker) map.removeLayer(marker);
+    marker = L.circleMarker(e.latlng, { radius: 6, color: '#fff', fillColor: '#1a73e8', fillOpacity: 1 }).addTo(map);
+
+    $('info').textContent = 'Mengambil nilai...';
+    try {
+      const { param, start, end } = current;
+      const res = await fetch(`/api/point?param=${param}&start=${start}&end=${end}&lon=${lng}&lat=${lat}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const cfg = PARAMS[param];
+      $('info').textContent =
+        `Lon ${lng.toFixed(3)}, Lat ${lat.toFixed(3)}\n` +
+        (data.mean === null ? 'Tidak ada data (tertutup awan / di luar cakupan)'
+                            : `Rata-rata: ${fmt(data.mean)} ${cfg.unit}`);
+
+      if (chart) chart.destroy();
+      chart = new Chart($('chart'), {
+        type: 'line',
+        data: {
+          labels: data.series.map(s => s.date),
+          datasets: [{ label: cfg.label, data: data.series.map(s => s.value),
+                       borderColor: '#1a73e8', pointRadius: 2, borderWidth: 1 }]
+        },
+        options: {
+          plugins: { legend: { display: false }, title: { display: true, text: 'Deret waktu harian' } },
+          scales: { y: { title: { display: true, text: cfg.unit } } }
+        }
+      });
+    } catch (err) {
+      $('info').textContent = 'Gagal: ' + err.message;
+    }
+  });
+
+  // ---------- Init ----------
+  (async function init() {
+    const res = await fetch('/api/params');
+    const data = await res.json();
+    PARAMS = data.params; PALETTE = data.palette;
+
+    for (const [key, cfg] of Object.entries(PARAMS)) {
+      const opt = document.createElement('option');
+      opt.value = key; opt.textContent = cfg.label;
+      $('param').appendChild(opt);
+    }
+    const today = new Date(), past = new Date(Date.now() - 30 * 86400000);
+    $('end').value = iso(today);
+    $('start').value = iso(past);
+    
+    // Pulihkan kondisi dari tautan yang dibagikan
+    const q = new URLSearchParams(location.search);
+    if (q.get('param') && PARAMS[q.get('param')]) $('param').value = q.get('param');
+    if (q.get('start')) $('start').value = q.get('start');
+    if (q.get('end')) $('end').value = q.get('end');
+    const lat = parseFloat(q.get('lat')), lng = parseFloat(q.get('lng')), z = parseInt(q.get('z'));
+    if (!isNaN(lat) && !isNaN(lng) && !isNaN(z)) map.setView([lat, lng], z);
+
+    $('apply').addEventListener('click', loadLayer);
+    $('param').addEventListener('change', setLegend);
+    setLegend();
+    loadLayer();
+  })();
+</script>
+</body>
+</html>
+<script src="/static/pm25.js"></script>
+<script src="/static/share.js"></script>
