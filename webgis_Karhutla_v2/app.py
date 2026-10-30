@@ -37,7 +37,7 @@ app = Flask(__name__, static_folder="public", static_url_path="")
 # Default mencakup Sumatra, Kalimantan, Jawa, Semenanjung Malaysia,
 # Singapura, Brunei, Thailand selatan, dan Filipina selatan.
 # ---------------------------------------------------------------
-BBOX = [92.0, -14.0, 142.0, 24.0]
+BBOX = [85.0, -15.0, 150.0, 30.0]
 AOI = ee.Geometry.Rectangle(BBOX, geodesic=False)
 
 CO_PALETTE = ["000000", "0000ff", "800080", "00ffff", "008000", "ffff00", "ff0000"]
