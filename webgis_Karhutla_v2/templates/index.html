@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SEA-AMS</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #app { display: flex; height: 100%; }
+    #sidebar { width: 340px; padding: 14px; overflow-y: auto; background: #85c2ffa7; border-right: 1px solid #ddd; }
+    #map { flex: 1; }
+    .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+    .logo { height: 48px; width: auto; }
+    .brand h1 { margin: 0; font-family: 'Segoe UI', Arial, sans-serif; font-size: 20px; font-weight: 700; line-height: 1.25; color: #000; }
+    .sub { font-size: 12px; color: #333; margin-bottom: 8px; }
+    label { display: block; font-weight: 600; font-size: 13px; margin: 10px 0 4px; }
+    select, input, button { width: 100%; padding: 8px; font-size: 14px; border: 1px solid #bbb; border-radius: 6px; }
+    button { background: #1a73e8; color: #fff; border: none; margin-top: 12px; cursor: pointer; }
+    button:disabled { background: #9bb8e8; cursor: wait; }
+    #legend-bar { height: 14px; border-radius: 3px; margin-top: 4px; }
+    #legend-labels { display: flex; justify-content: space-between; font-size: 12px; }
+    #pnote { font-size: 11px; color: #333; margin-top: 6px; }
+    #meta { font-size: 11px; color: #333; margin-top: 4px; }
+    #info { margin-top: 14px; font-size: 13px; white-space: pre-line; font-weight: 600; }
+    #status { font-size: 12px; color: #c5221f; margin-top: 8px; }
+    .hint { font-size: 12px; color: #333; margin-top: 14px; }
+    .panel { margin-top: 12px; padding: 10px; border: 1px solid #ccd; border-radius: 8px; background: #fff; }
+    .ptitle { font-weight: 700; margin-bottom: 4px; }
+    .row { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; }
+    .chk { display: flex; align-items: center; gap: 6px; font-weight: 400; font-size: 13px; margin: 6px 0 0; }
+    .chk input { width: auto; padding: 0; margin: 0; }
+    input[type=range] { padding: 0; border: none; margin: 0; }
+    .credit { font-size: 10px; color: #333; margin-top: 16px; line-height: 1.4; }
+    canvas { margin-top: 10px; }
+    @media (max-width: 720px) {
+      #app { flex-direction: column-reverse; }
+      #sidebar { width: 100%; height: 45%; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <img src="/logo.png" alt="logo" class="logo" />
+      <h1>SEA-AMS:<h1> </h1>Southeast Asia Atmospheric Monitoring System</h1>
+    </div>
+    <div class="sub"> Pilih Parameter dan Rentang Waktu yang Ingin Diamati</div>
+
+    <label for="param">Parameter</label>
+    <select id="param"></select>
+
+    <label for="start">Tanggal mulai</label>
+    <input type="date" id="start" />
+    <label for="end">Tanggal akhir</label>
+    <input type="date" id="end" />
+
+    <button id="apply">Tampilkan</button>
+    <div id="status"></div>
+
+    <label id="legend-title">Legenda</label>
+    <div id="legend-bar"></div>
+    <div id="legend-labels"><span id="lg-min"></span><span id="lg-mid"></span><span id="lg-max"></span></div>
+    <div id="pnote"></div>
+    <div id="meta"></div>
+
+    <div class="panel">
+      <div class="ptitle">Map Layer</div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="ly-data" checked />Layer data</label>
+        <input type="range" id="op-data" min="0.1" max="1" step="0.1" value="0.8" />
+      </div>
+      <label class="chk"><input type="checkbox" id="ly-country" checked />Batas negara</label>
+      <label class="chk"><input type="checkbox" id="ly-prov" />Batas provinsi / negara bagian</label>
+      <label class="chk"><input type="checkbox" id="ly-aoi" checked />Kotak area studi</label>
+    </div>
+
+    <div class="hint">Klik peta untuk melihat nilai dan grafik deret waktu di titik tersebut.</div>
+    <div id="info"></div>
+    <canvas id="chart" height="220"></canvas>
+
+    <div class="credit">
+      Contains modified Copernicus Atmosphere Monitoring Service information 2026.
+      Contains modified Copernicus Sentinel data 2026.
+      Neither the European Commission nor ECMWF is responsible for any use that may be
+      made of the Copernicus information or data it contains.
+    </div>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  let PARAMS = {}, BBOX = [];
+  let dataLayer = null, aoiRect = null, marker = null, chart = null;
+  const bl = { country: null, province: null };      // layer batas wilayah
+  const BID = { country: 'ly-country', province: 'ly-prov' };
+  let current = null; // { param, start, end }
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- Peta ----------
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors', maxZoom: 18
+  });
+  const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri', maxZoom: 18
+  });
+  const map = L.map('map', { layers: [osm] }).setView([-2.5, 118], 4);
+  L.control.layers({ 'OpenStreetMap': osm, 'Citra Satelit (Esri)': esri }).addTo(map);
+
+  // Pane khusus: batas wilayah selalu DI ATAS layer data
+  map.createPane('batas');
+  map.getPane('batas').style.zIndex = 450;
+  map.getPane('batas').style.pointerEvents = 'none';
+
+  // ---------- Util ----------
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const fmtVal = (v, cfg) => (v === null || v === undefined) ? '-'
+    : (cfg.unit === 'µg/m³' ? Number(v).toFixed(1) : Number(v).toExponential(3));
+
+  function setLegend() {
+    const cfg = PARAMS[$('param').value];
+    $('legend-title').textContent = `${cfg.label} [${cfg.unit}]`;
+    $('legend-bar').style.background =
+      `linear-gradient(to right, ${cfg.palette.map(c => '#' + c).join(',')})`;
+    $('lg-min').textContent = cfg.min;
+    $('lg-mid').textContent = (cfg.min + cfg.max) / 2;
+    $('lg-max').textContent = cfg.max;
+    $('pnote').textContent = cfg.note;
+  }
+
+  // ---------- Layer data ----------
+  async function loadLayer() {
+    const param = $('param').value, start = $('start').value, end = $('end').value;
+    if (!start || !end) { $('status').textContent = 'Isi tanggal mulai & akhir.'; return; }
+
+    $('apply').disabled = true;
+    $('status').textContent = 'Memuat data dari Earth Engine...';
+    try {
+      const res = await fetch(`/api/tiles?param=${param}&start=${start}&end=${end}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      if (dataLayer) map.removeLayer(dataLayer);
+      dataLayer = L.tileLayer(data.tile_url, { opacity: parseFloat($('op-data').value) });
+      if ($('ly-data').checked) dataLayer.addTo(map);
+
+      current = { param, start, end };
+      setLegend();
+      $('meta').textContent = `Jumlah citra / langkah waktu yang dirata-ratakan: ${data.n_images}`;
+      $('status').textContent = '';
+      $('info').textContent = '';
+      if (chart) { chart.destroy(); chart = null; }
+    } catch (e) {
+      $('status').textContent = 'Gagal: ' + e.message;
+    } finally {
+      $('apply').disabled = false;
+    }
+  }
+
+  // ---------- Batas wilayah (overlay di atas data) ----------
+  async function setBoundary(kind, on) {
+    if (!on) { if (bl[kind]) map.removeLayer(bl[kind]); return; }
+    if (!bl[kind]) {
+      try {
+        const res = await fetch(`/api/boundaries?kind=${kind}`);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        bl[kind] = L.tileLayer(data.tile_url, { pane: 'batas' });
+      } catch (e) {
+        $('status').textContent = 'Gagal memuat batas: ' + e.message;
+        $(BID[kind]).checked = false;
+        return;
+      }
+    }
+    if ($(BID[kind]).checked) bl[kind].addTo(map);
+  }
+
+  function setAoi(on) {
+    if (!aoiRect) return;
+    if (on) aoiRect.addTo(map); else map.removeLayer(aoiRect);
+  }
+
+  // ---------- Klik titik ----------
+  map.on('click', async (e) => {
+    if (!current) return;
+    const { lat, lng } = e.latlng;
+    if (marker) map.removeLayer(marker);
+    marker = L.circleMarker(e.latlng, { radius: 6, color: '#fff', fillColor: '#1a73e8', fillOpacity: 1 }).addTo(map);
+
+    $('info').textContent = 'Mengambil nilai...';
+    try {
+      const { param, start, end } = current;
+      const res = await fetch(`/api/point?param=${param}&start=${start}&end=${end}&lon=${lng}&lat=${lat}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const cfg = PARAMS[param];
+      $('info').textContent =
+        `Lon ${lng.toFixed(3)}, Lat ${lat.toFixed(3)}\n` +
+        (data.mean === null ? 'Tidak ada data (tertutup awan / di luar cakupan)'
+                            : `Rata-rata: ${fmtVal(data.mean, cfg)} ${cfg.unit}`);
+
+      if (chart) chart.destroy();
+      chart = new Chart($('chart'), {
+        type: 'line',
+        data: {
+          labels: data.series.map(s => s.date),
+          datasets: [{ label: cfg.label, data: data.series.map(s => s.value),
+                       borderColor: '#1a73e8', pointRadius: 2, borderWidth: 1 }]
+        },
+        options: {
+          plugins: { legend: { display: false }, title: { display: true, text: 'Deret waktu harian' } },
+          scales: { y: { title: { display: true, text: cfg.unit } } }
+        }
+      });
+    } catch (err) {
+      $('info').textContent = 'Gagal: ' + err.message;
+    }
+  });
+
+  // ---------- Init ----------
+  (async function init() {
+    const res = await fetch('/api/params');
+    const data = await res.json();
+    PARAMS = data.params; BBOX = data.bbox;
+
+    for (const [key, cfg] of Object.entries(PARAMS)) {
+      const opt = document.createElement('option');
+      opt.value = key; opt.textContent = cfg.label;
+      $('param').appendChild(opt);
+    }
+    const today = new Date(), past = new Date(Date.now() - 14 * 86400000);
+    $('end').value = iso(today);
+    $('start').value = iso(past);
+
+    // Pulihkan kondisi dari tautan yang dibagikan
+    const q = new URLSearchParams(location.search);
+    if (q.get('param') && PARAMS[q.get('param')]) $('param').value = q.get('param');
+    if (q.get('start')) $('start').value = q.get('start');
+    if (q.get('end')) $('end').value = q.get('end');
+    if (q.has('bn')) $('ly-country').checked = q.get('bn') === '1';
+    if (q.has('bp')) $('ly-prov').checked = q.get('bp') === '1';
+    if (q.has('bb')) $('ly-aoi').checked = q.get('bb') === '1';
+
+    // Kotak area studi + posisi awal peta
+    const bounds = [[BBOX[1], BBOX[0]], [BBOX[3], BBOX[2]]];
+    aoiRect = L.rectangle(bounds, {
+      pane: 'batas', color: '#d32f2f', weight: 2, dashArray: '6 4', fill: false, interactive: false
+    });
+    const lat = parseFloat(q.get('lat')), lng = parseFloat(q.get('lng')), z = parseInt(q.get('z'));
+    if (!isNaN(lat) && !isNaN(lng) && !isNaN(z)) map.setView([lat, lng], z);
+    else map.fitBounds(bounds);
+
+    // Kontrol
+    $('apply').addEventListener('click', loadLayer);
+    $('param').addEventListener('change', setLegend);
+    $('ly-data').addEventListener('change', (e) => {
+      if (!dataLayer) return;
+      if (e.target.checked) dataLayer.addTo(map); else map.removeLayer(dataLayer);
+    });
+    $('op-data').addEventListener('input', (e) => {
+      if (dataLayer) dataLayer.setOpacity(parseFloat(e.target.value));
+    });
+    $('ly-country').addEventListener('change', (e) => setBoundary('country', e.target.checked));
+    $('ly-prov').addEventListener('change', (e) => setBoundary('province', e.target.checked));
+    $('ly-aoi').addEventListener('change', (e) => setAoi(e.target.checked));
+
+    setLegend();
+    setAoi($('ly-aoi').checked);
+    setBoundary('country', $('ly-country').checked);
+    setBoundary('province', $('ly-prov').checked);
+    loadLayer();
+  })();
+</script>
+<script src="/share.js"></script>
+</body>
+</html>
